@@ -3,22 +3,15 @@ pragma solidity >=0.8.4;
 import "../registry/ENS.sol";
 import "./IBaseRegistrar.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-// import "@openzeppelin/contracts/access/Ownable.sol"; // Removed: DAO governance only
+// import "@openzeppelin/contracts/access/Ownable.sol";
 
-/**
- * @title BaseRegistrarImplementation
- * @dev Modified for Stable Name Service with specific constraints:
- * - No ownership changes after registration (immutable ownership)
- * - One domain per EOA restriction (One Name Per Wallet)
- * - No domain expiration (permanent registration) 
- * - Free registration (zero cost)
- * - Name length: 5-15 characters
- * - Unicode only, no spaces, case-insensitive
- * - Reserved names protection
- * - DAO governance only (no admin)
- */
+interface IPublicResolver {
+    function setAddr(bytes32 node, address addr) external;
+    function setName(bytes32 node, string calldata name) external;
+}
+
 contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
-    // A map of expiry times - DISABLED for non-expiring domains
+    // A map of expiry times
     // mapping(uint256 => uint256) expiries;
     // The ENS registry
     ENS public ens;
@@ -36,13 +29,9 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
     // Domain name to token ID mapping (normalized lowercase)
     mapping(string => uint256) public nameToTokenId;
     
-    // Reserved names mapping for preventing impersonation/scam
+    // Reserved names mapping for preventing scam
     mapping(string => bool) public reservedNames;
     // uint256 public constant GRACE_PERIOD = 90 days; // DISABLED - no expiration
-    
-    // NEW: Stable Name Service events
-    event ReservedNameAdded(string indexed name);
-    event ReservedNameRemoved(string indexed name);
     
     bytes4 private constant INTERFACE_META_ID =
         bytes4(keccak256("supportsInterface(bytes4)"));
@@ -78,11 +67,15 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
             isApprovedForAll(owner, spender));
     }
 
+    // Track if controller has been set (can only be set once)
+    bool private controllerSet;
+    
     constructor(ENS _ens) ERC721("Stable Domains", "STABLE") {
         ens = _ens;
         // baseNode is now hardcoded as STABLE_NODE
         
-        // Initialize common reserved names for Stable Name Service
+        // Initialize common reserved names for Stable Name Service (immutable)
+        // TODO: will be adding other scam names
         _addReservedName("stable");
         _addReservedName("binance");
         _addReservedName("tether");
@@ -92,6 +85,14 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
         _addReservedName("admin");
         _addReservedName("root");
         _addReservedName("owner");
+        _addReservedName("dao");
+        _addReservedName("governance");
+        _addReservedName("support");
+        _addReservedName("help");
+        _addReservedName("api");
+        _addReservedName("www");
+        _addReservedName("mail");
+        _addReservedName("email");
     }
 
     modifier live() {
@@ -114,48 +115,24 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
         return super.ownerOf(tokenId);
     }
 
-    // Authorises a controller, who can register and renew domains.
-    // NOTE: In production, this should be managed by DAO governance
-    function addController(address controller) external override /* onlyOwner */ {
-        // TODO: Replace with DAO governance mechanism
+    // NOTE: Controller management removed - controller is set immutably at deployment
+    // NOTE: Reserved names management removed - reserved names are set immutably at deployment
+    
+    // One-time controller setup (can only be called once)
+    function addController(address controller) external override {
+        require(!controllerSet, "BaseRegistrar: Controller already set");
+        require(controller != address(0), "BaseRegistrar: Invalid controller address");
         controllers[controller] = true;
+        controllerSet = true;
         emit ControllerAdded(controller);
     }
 
-    // Revoke controller permission for an address.
-    // NOTE: In production, this should be managed by DAO governance
-    function removeController(address controller) external override /* onlyOwner */ {
-        // TODO: Replace with DAO governance mechanism
-        controllers[controller] = false;
-        emit ControllerRemoved(controller);
+    function removeController(address /* controller */) external pure override {
+        revert("BaseRegistrar: Controller removal not supported");
     }
 
-    // Set the resolver for the TLD this registrar manages.
-    // NOTE: In production, this should be managed by DAO governance
-    function setResolver(address resolver) external override /* onlyOwner */ {
-        // TODO: Replace with DAO governance mechanism
-        ens.setResolver(STABLE_NODE, resolver);
-    }
-
-    /**
-     * @dev Add a reserved name (DAO governance only)
-     * NOTE: In production, this should be managed by DAO governance
-     */
-    function addReservedName(string calldata name) external /* onlyDAO */ {
-        // TODO: Replace with DAO governance mechanism
-        string memory normalizedName = _normalizeName(name);
-        _addReservedName(normalizedName);
-    }
-
-    /**
-     * @dev Remove a reserved name (DAO governance only)
-     * NOTE: In production, this should be managed by DAO governance
-     */
-    function removeReservedName(string calldata name) external /* onlyDAO */ {
-        // TODO: Replace with DAO governance mechanism
-        string memory normalizedName = _normalizeName(name);
-        reservedNames[normalizedName] = false;
-        emit ReservedNameRemoved(normalizedName);
+    function setResolver(address /* resolver */) external pure override {
+        revert("BaseRegistrar: Resolver management not supported");
     }
 
     // Returns the expiration timestamp of the specified id.
@@ -204,32 +181,6 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
         return _register(id, owner, duration, false);
     }
     
-    function registerWithSetup(
-        uint256 id,
-        address owner,
-        address resolver
-    ) external onlyController returns (uint256) {
-        require(available(id));
-        require(!hasRegistered[owner], "BaseRegistrar: One name per wallet limit");
-        
-        _mint(owner, id);
-        
-        // Update Stable Name Service mappings
-        hasRegistered[owner] = true;
-        accountToTokenId[owner] = id;
-        
-        // Set owner in ENS registry
-        ens.setSubnodeOwner(STABLE_NODE, bytes32(id), owner);
-        
-        // Set resolver if provided
-        if (resolver != address(0)) {
-            bytes32 node = keccak256(abi.encodePacked(STABLE_NODE, bytes32(id)));
-            ens.setResolver(node, resolver);
-        }
-        
-        emit NameRegistered(id, owner, type(uint256).max);
-        return type(uint256).max;
-    }
 
     /**
      * @dev Register a domain name with string input (Stable Name Service)
@@ -383,6 +334,28 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar /* , Ownable */ {
      */
     function _addReservedName(string memory name) internal {
         reservedNames[name] = true;
-        emit ReservedNameAdded(name);
+    }
+
+    /**
+     * @dev Set resolver for a registered name (only callable by controller)
+     */
+    function setResolverForName(bytes32 node, address resolver) external onlyController {
+        ens.setResolver(node, resolver);
+    }
+
+    /**
+     * @dev Set resolver and address record for a registered name (ENS standard behavior)
+     * Only callable by controller during registration
+     */
+    function setResolverAndAddr(
+        bytes32 node, 
+        address resolver, 
+        address owner
+    ) external onlyController {
+        // Set resolver first
+        ens.setResolver(node, resolver);
+        
+        // Set address record in resolver (as the registrar, not the controller)
+        IPublicResolver(resolver).setAddr(node, owner);
     }
 }

@@ -3,6 +3,12 @@ pragma solidity ~0.8.17;
 
 import {BaseRegistrarImplementation} from "./BaseRegistrarImplementation.sol";
 import {IPriceOracle} from "./IETHRegistrarController.sol";
+import {ENS} from "../registry/ENS.sol";
+
+interface IPublicResolver {
+    function setAddr(bytes32 node, address addr) external;
+    function setName(bytes32 node, string calldata name) external;
+}
 
 // NEW: Stable Name Service specific errors
 error NameNotAvailable(string name);
@@ -13,7 +19,7 @@ error WalletAlreadyHasName(address wallet);
 error InvalidName(string name);
 
 /**
- * @title ETHRegistrarController  
+ * @title ETHRegistrarController
  * @dev Modified for Stable Name Service following policies:
  * - Free registration (zero cost)
  * - Name validation (5-15 chars, Unicode, no spaces, case-insensitive)
@@ -26,7 +32,8 @@ error InvalidName(string name);
 contract ETHRegistrarController {
     bytes32 private constant STABLE_NODE =
         0xbc67d859e38ff2c79747cbf55827e66700c058ff8a1b8990fb27e9c934ba3b6c;
-    BaseRegistrarImplementation immutable registrar; // Renamed to avoid shadowing
+    BaseRegistrarImplementation immutable base;
+    ENS immutable ens;
 
     event NameRegistered(
         string indexed name,
@@ -34,8 +41,9 @@ contract ETHRegistrarController {
         uint256 indexed tokenId
     );
 
-    constructor(BaseRegistrarImplementation _registrar) {
-        registrar = _registrar;
+    constructor(BaseRegistrarImplementation _base) {
+        base = _base;
+        ens = base.ens();
     }
 
     /**
@@ -53,7 +61,7 @@ contract ETHRegistrarController {
         }
         
         // Check one name per wallet policy
-        if (registrar.hasRegistered(msg.sender)) {
+        if (base.hasRegistered(msg.sender)) {
             revert WalletAlreadyHasName(msg.sender);
         }
         
@@ -61,7 +69,7 @@ contract ETHRegistrarController {
         string memory normalizedName = _toLowercase(name);
         
         // Check if name is reserved
-        if (registrar.reservedNames(normalizedName)) {
+        if (base.reservedNames(normalizedName)) {
             revert NameReserved(normalizedName);
         }
         
@@ -69,15 +77,14 @@ contract ETHRegistrarController {
         bytes32 label = keccak256(bytes(normalizedName));
         uint256 tokenId = uint256(label);
         
-        // Register through BaseRegistrarImplementation
-        registrar.registerName(tokenId, msg.sender, normalizedName);
+        // Register through BaseRegistrarImplementation with resolver
+        base.registerName(tokenId, msg.sender, normalizedName);
         
-        // Set resolver if provided  
-        if (resolver != address(0)) {
-            bytes32 node = keccak256(abi.encodePacked(STABLE_NODE, label));
-            // Note: Would call ens.setResolver(node, resolver) but we need ENS reference
-            // This should be handled in BaseRegistrarImplementation
-        }
+        // NOTE: Resolver setting removed - ENS standard workflow:
+        // 1. Register domain first
+        // 2. User sets resolver via ENS.setResolver()
+        // 3. User sets address via PublicResolver.setAddr()
+        // This matches the standard ENS registration flow
         
         emit NameRegistered(normalizedName, msg.sender, tokenId);
     }
@@ -117,7 +124,7 @@ contract ETHRegistrarController {
      * @dev Check if a name is available for registration
      */
     function available(string memory name) public view returns (bool) {
-        return registrar.availableName(name);
+        return base.availableName(name);
     }
 
     /**
@@ -135,47 +142,9 @@ contract ETHRegistrarController {
         revert("ETHRegistrarController: Renewal not needed for permanent domains");
     }
 
-    /**
-     * @dev Get domain name by account address 
-     * Note: Used for off-chain metadata queries
-     */
-    function getDomainByAccount(address account) external view returns (string memory) {
-        if (!registrar.hasRegistered(account)) {
-            return "";
-        }
-        
-        uint256 tokenId = registrar.accountToTokenId(account);
-        string memory name = registrar.tokenIdToName(tokenId);
-        
-        return name; // Return normalized name without .stable suffix
-    }
-
-    /**
-     * @dev Get full domain name with .stable suffix
-     */
-    function getFullDomainByAccount(address account) external view returns (string memory) {
-        if (!registrar.hasRegistered(account)) {
-            return "";
-        }
-        
-        uint256 tokenId = registrar.accountToTokenId(account);
-        string memory name = registrar.tokenIdToName(tokenId);
-        
-        return string(abi.encodePacked(name, ".stable"));
-    }
-
-    /**
-     * @dev Get account by domain name
-     */
-    function getAccountByDomain(string calldata name) external view returns (address) {
-        string memory normalizedName = _toLowercase(name);
-        uint256 tokenId = registrar.nameToTokenId(normalizedName);
-        if (tokenId == 0) {
-            return address(0);
-        }
-        
-        return registrar.ownerOf(tokenId);
-    }
+    // NOTE: Domain resolution functions removed - use standard ENS PublicResolver instead
+    // Forward resolution: PublicResolver.addr(namehash("name.stable"))
+    // Reverse resolution: PublicResolver.name(reverseNode(address))
 
     /**
      * @dev Internal function to convert string to lowercase

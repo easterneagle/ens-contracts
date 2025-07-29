@@ -11,7 +11,7 @@ import "./profiles/NameResolver.sol";
 import "./profiles/PubkeyResolver.sol";
 import "./profiles/TextResolver.sol";
 import "./Multicallable.sol";
-import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol";
+// import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol"; // Commented out for Stable Name Service
 import {INameWrapper} from "../wrapper/INameWrapper.sol";
 import {COIN_TYPE_ETH} from "../utils/ENSIP19.sol";
 
@@ -26,8 +26,8 @@ contract PublicResolver is
     InterfaceResolver,
     NameResolver,
     PubkeyResolver,
-    TextResolver,
-    ReverseClaimer
+    TextResolver
+    // ReverseClaimer removed for Stable Name Service compatibility
 {
     ENS immutable ens;
     INameWrapper immutable nameWrapper;
@@ -71,11 +71,12 @@ contract PublicResolver is
         INameWrapper wrapperAddress,
         address _trustedETHController,
         address _trustedReverseRegistrar
-    ) ReverseClaimer(_ens, msg.sender) {
+    ) {
         ens = _ens;
-        nameWrapper = wrapperAddress;
+        nameWrapper = wrapperAddress; // Can be zero address for Stable Name Service
         trustedETHController = _trustedETHController;
         trustedReverseRegistrar = _trustedReverseRegistrar;
+        // ReverseClaimer constructor call removed for Stable Name Service compatibility
     }
 
     /// @dev See {IERC1155-setApprovalForAll}.
@@ -122,7 +123,8 @@ contract PublicResolver is
             return true;
         }
         address owner = ens.owner(node);
-        if (owner == address(nameWrapper)) {
+        // Only use nameWrapper if it's not zero address (for Stable Name Service compatibility)
+        if (address(nameWrapper) != address(0) && owner == address(nameWrapper)) {
             owner = nameWrapper.ownerOf(uint256(node));
         }
         return

@@ -44,7 +44,7 @@ async function main() {
     ]);
     console.log("ETHRegistrarController deployed to:", controller.address);
     
-    // Add controller to registrar
+    // Add controller to registrar (one-time setup)
     await deployer.writeContract({
         address: registrar.address,
         abi: registrar.abi,
@@ -52,7 +52,7 @@ async function main() {
         args: [controller.address],
         gas: 3000000n
     });
-    console.log("Added controller to registrar");
+    console.log("Added controller to registrar (one-time setup)");
     
     // Transfer .stable ownership to registrar
     await deployer.writeContract({
