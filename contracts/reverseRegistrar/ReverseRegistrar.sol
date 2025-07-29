@@ -18,22 +18,22 @@ bytes32 constant ADDR_REVERSE_NODE = 0x91d1777781884d03a6757a803996e38de2a42967f
 contract ReverseRegistrar is Ownable, Controllable, IReverseRegistrar {
     ENS public immutable ens;
     NameResolver public defaultResolver;
+    
+    // Stable Name Service: Track if reverse record has been set (immutable once set)
+    mapping(address => bool) public reverseRecordSet;
+    mapping(address => bytes32) public reverseNodes;
 
     event ReverseClaimed(address indexed addr, bytes32 indexed node);
     event DefaultResolverChanged(NameResolver indexed resolver);
+    event ReverseRecordSet(address indexed addr, bytes32 indexed node, string name);
 
     /// @dev Constructor
     /// @param ensAddr The address of the ENS registry.
     constructor(ENS ensAddr) {
         ens = ensAddr;
 
-        // Assign ownership of the reverse record to our deployer
-        ReverseRegistrar oldRegistrar = ReverseRegistrar(
-            ensAddr.owner(ADDR_REVERSE_NODE)
-        );
-        if (address(oldRegistrar) != address(0x0)) {
-            oldRegistrar.claim(msg.sender);
-        }
+        // Simplified constructor for Stable Name Service
+        // Skip old registrar migration since we're setting up fresh
     }
 
     modifier authorised(address addr) {
@@ -75,12 +75,26 @@ contract ReverseRegistrar is Ownable, Controllable, IReverseRegistrar {
         address owner,
         address resolver
     ) public override authorised(addr) returns (bytes32) {
+        // Stable Name Service: Check if reverse record already exists
+        bytes32 existingNode = reverseNodes[addr];
+        if (existingNode != bytes32(0)) {
+            // If already claimed, just return the existing node
+            return existingNode;
+        }
+        
         bytes32 labelHash = sha3HexAddress(addr);
         bytes32 reverseNode = keccak256(
             abi.encodePacked(ADDR_REVERSE_NODE, labelHash)
         );
+        
+        // Store the reverse node for this address
+        reverseNodes[addr] = reverseNode;
+        
         emit ReverseClaimed(addr, reverseNode);
-        ens.setSubnodeRecord(ADDR_REVERSE_NODE, labelHash, owner, resolver, 0);
+        ens.setSubnodeOwner(ADDR_REVERSE_NODE, labelHash, owner);
+        if (resolver != address(0)) {
+            ens.setResolver(reverseNode, resolver);
+        }
         return reverseNode;
     }
 
@@ -125,8 +139,30 @@ contract ReverseRegistrar is Ownable, Controllable, IReverseRegistrar {
         address resolver,
         string memory name
     ) public override returns (bytes32) {
+        // Simplified authorization check - only the address owner or controllers
+        require(
+            addr == msg.sender || controllers[msg.sender],
+            "ReverseRegistrar: Not authorized"
+        );
+        
+        // Stable Name Service: Check if reverse record already set (immutable once set)
+        require(!reverseRecordSet[addr], "ReverseRegistrar: Reverse record already set");
+        
+        // Validate inputs
+        require(bytes(name).length > 0, "ReverseRegistrar: Name cannot be empty");
+        require(resolver != address(0), "ReverseRegistrar: Resolver cannot be zero");
+        
+        // Claim the reverse node
         bytes32 node = claimForAddr(addr, owner, resolver);
+        
+        // Set the name in the resolver
         NameResolver(resolver).setName(node, name);
+        
+        // Mark as permanently set
+        reverseRecordSet[addr] = true;
+        
+        emit ReverseRecordSet(addr, node, name);
+        
         return node;
     }
 

@@ -100,12 +100,16 @@ contract ENSRegistry is ENS {
         address owner
     ) public virtual override authorised(node) returns (bytes32) {
         bytes32 STABLE_NODE = 0xbc67d859e38ff2c79747cbf55827e66700c058ff8a1b8990fb27e9c934ba3b6c;
+        bytes32 REVERSE_NODE = 0xa097f6721ce401e757d1223a763fef49b8b5f90bb18567ddb86fd205dff71d34; // namehash("reverse")
+        bytes32 ADDR_REVERSE_NODE = 0x91d1777781884d03a6757a803996e38de2a42967fb37eeaca72729271025a9e2; // namehash("addr.reverse")
         
         // Allow subdomain creation only from:
-        // 1. Root node (0x0) - for TLD setup (.stable)
+        // 1. Root node (0x0) - for TLD setup (.stable, .reverse)
         // 2. STABLE_NODE - for domain registration (alice.stable, bob.stable, etc)
-        if (node != bytes32(0) && node != STABLE_NODE) {
-            revert("ENSRegistry: Subdomain creation only allowed from root or stable node");
+        // 3. REVERSE_NODE - for reverse resolution setup (addr.reverse)
+        // 4. ADDR_REVERSE_NODE - for individual address reverse records
+        if (node != bytes32(0) && node != STABLE_NODE && node != REVERSE_NODE && node != ADDR_REVERSE_NODE) {
+            revert("ENSRegistry: Subdomain creation only allowed from root, stable, reverse, or addr.reverse node");
         }
         
         bytes32 subnode = keccak256(abi.encodePacked(node, label));
