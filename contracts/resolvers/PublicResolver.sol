@@ -13,6 +13,7 @@ import "./profiles/TextResolver.sol";
 import "./Multicallable.sol";
 import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol";
 import {INameWrapper} from "../wrapper/INameWrapper.sol";
+import {COIN_TYPE_ETH} from "../utils/ENSIP19.sol";
 
 /// A simple resolver anyone can use; only allows the owner of a node to set its
 /// address.
@@ -45,6 +46,10 @@ contract PublicResolver is
     /// (owner, name, delegate) => approved
     mapping(address => mapping(bytes32 => mapping(address => bool)))
         private _tokenApprovals;
+        
+    /// Bidirectional mapping: address to ENS name
+    mapping(address => string) private addressToName;
+    mapping(address => bytes32) private addressToNode;
 
     // Logged when an operator is added or removed.
     event ApprovalForAll(
@@ -145,5 +150,63 @@ contract PublicResolver is
         returns (bool)
     {
         return super.supportsInterface(interfaceID);
+    }
+    
+    /// @dev Get the ENS name associated with an address
+    /// @param addr The address to query
+    /// @return The associated ENS name, or empty string if none
+    function getName(address addr) external view returns (string memory) {
+        return addressToName[addr];
+    }
+    
+    /// @dev Get the ENS node associated with an address
+    /// @param addr The address to query
+    /// @return The associated ENS node, or 0x0 if none
+    function getNode(address addr) external view returns (bytes32) {
+        return addressToNode[addr];
+    }
+    
+    /// @dev Override setAddr to update bidirectional mapping
+    function setAddr(
+        bytes32 node,
+        address _addr
+    ) external override(AddrResolver) authorised(node) {
+        // Get previous address to clear old mapping
+        address previousAddr = addr(node);
+        if (previousAddr != address(0) && addressToNode[previousAddr] == node) {
+            delete addressToName[previousAddr];
+            delete addressToNode[previousAddr];
+        }
+        
+        // Call parent implementation manually
+        versionable_addresses[recordVersions[node]][node][COIN_TYPE_ETH] = abi.encodePacked(_addr);
+        emit AddrChanged(node, _addr);
+        emit AddressChanged(node, COIN_TYPE_ETH, abi.encodePacked(_addr));
+        
+        // Update bidirectional mapping
+        if (_addr != address(0)) {
+            addressToNode[_addr] = node;
+            // Get name if available
+            string memory nodeName = versionable_names[recordVersions[node]][node];
+            if (bytes(nodeName).length > 0) {
+                addressToName[_addr] = nodeName;
+            }
+        }
+    }
+    
+    /// @dev Override setName to update bidirectional mapping
+    function setName(
+        bytes32 node,
+        string calldata newName
+    ) external override(NameResolver) authorised(node) {
+        // Call parent implementation manually
+        versionable_names[recordVersions[node]][node] = newName;
+        emit NameChanged(node, newName);
+        
+        // Update bidirectional mapping if this node has an address
+        address nodeAddr = addr(node);
+        if (nodeAddr != address(0) && addressToNode[nodeAddr] == node) {
+            addressToName[nodeAddr] = newName;
+        }
     }
 }

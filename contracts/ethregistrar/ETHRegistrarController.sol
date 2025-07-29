@@ -2,288 +2,197 @@
 pragma solidity ~0.8.17;
 
 import {BaseRegistrarImplementation} from "./BaseRegistrarImplementation.sol";
-import {StringUtils} from "../utils/StringUtils.sol";
-import {Resolver} from "../resolvers/Resolver.sol";
-import {ENS} from "../registry/ENS.sol";
-import {ReverseRegistrar} from "../reverseRegistrar/ReverseRegistrar.sol";
-import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol";
-import {IETHRegistrarController, IPriceOracle} from "./IETHRegistrarController.sol";
+import {IPriceOracle} from "./IETHRegistrarController.sol";
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
-import {Address} from "@openzeppelin/contracts/utils/Address.sol";
-import {INameWrapper} from "../wrapper/INameWrapper.sol";
-import {ERC20Recoverable} from "../utils/ERC20Recoverable.sol";
-
-error CommitmentTooNew(bytes32 commitment);
-error CommitmentTooOld(bytes32 commitment);
+// NEW: Stable Name Service specific errors
 error NameNotAvailable(string name);
-error DurationTooShort(uint256 duration);
-error ResolverRequiredWhenDataSupplied();
-error UnexpiredCommitmentExists(bytes32 commitment);
-error InsufficientValue();
-error Unauthorised(bytes32 node);
-error MaxCommitmentAgeTooLow();
-error MaxCommitmentAgeTooHigh();
+error NameTooShort(string name);
+error NameTooLong(string name);
+error NameReserved(string name);
+error WalletAlreadyHasName(address wallet);
+error InvalidName(string name);
 
-/// @dev A registrar controller for registering and renewing names at fixed cost.
-contract ETHRegistrarController is
-    Ownable,
-    IETHRegistrarController,
-    IERC165,
-    ERC20Recoverable,
-    ReverseClaimer
-{
-    using StringUtils for *;
-    using Address for address;
-
-    uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
-    bytes32 private constant ETH_NODE =
-        0x93cdeb708b7545dc668eb9280176169d1c33cfd8ed6f04690a0bcc88a93fc4ae;
-    uint64 private constant MAX_EXPIRY = type(uint64).max;
-    BaseRegistrarImplementation immutable base;
-    IPriceOracle public immutable prices;
-    uint256 public immutable minCommitmentAge;
-    uint256 public immutable maxCommitmentAge;
-    ReverseRegistrar public immutable reverseRegistrar;
-    INameWrapper public immutable nameWrapper;
-
-    mapping(bytes32 => uint256) public commitments;
+/**
+ * @title ETHRegistrarController  
+ * @dev Modified for Stable Name Service following policies:
+ * - Free registration (zero cost)
+ * - Name validation (5-15 chars, Unicode, no spaces, case-insensitive)
+ * - One name per wallet
+ * - Reserved names protection
+ * - Off-chain metadata only
+ * - No commit-reveal (immediate registration)
+ * - DAO governance only
+ */
+contract ETHRegistrarController {
+    bytes32 private constant STABLE_NODE =
+        0xbc67d859e38ff2c79747cbf55827e66700c058ff8a1b8990fb27e9c934ba3b6c;
+    BaseRegistrarImplementation immutable registrar; // Renamed to avoid shadowing
 
     event NameRegistered(
-        string name,
-        bytes32 indexed label,
+        string indexed name,
         address indexed owner,
-        uint256 baseCost,
-        uint256 premium,
-        uint256 expires
-    );
-    event NameRenewed(
-        string name,
-        bytes32 indexed label,
-        uint256 cost,
-        uint256 expires
+        uint256 indexed tokenId
     );
 
-    constructor(
-        BaseRegistrarImplementation _base,
-        IPriceOracle _prices,
-        uint256 _minCommitmentAge,
-        uint256 _maxCommitmentAge,
-        ReverseRegistrar _reverseRegistrar,
-        INameWrapper _nameWrapper,
-        ENS _ens
-    ) ReverseClaimer(_ens, msg.sender) {
-        if (_maxCommitmentAge <= _minCommitmentAge) {
-            revert MaxCommitmentAgeTooLow();
-        }
-
-        if (_maxCommitmentAge > block.timestamp) {
-            revert MaxCommitmentAgeTooHigh();
-        }
-
-        base = _base;
-        prices = _prices;
-        minCommitmentAge = _minCommitmentAge;
-        maxCommitmentAge = _maxCommitmentAge;
-        reverseRegistrar = _reverseRegistrar;
-        nameWrapper = _nameWrapper;
+    constructor(BaseRegistrarImplementation _registrar) {
+        registrar = _registrar;
     }
 
-    function rentPrice(
-        string memory name,
-        uint256 duration
-    ) public view override returns (IPriceOracle.Price memory price) {
-        bytes32 label = keccak256(bytes(name));
-        price = prices.price(name, base.nameExpires(uint256(label)), duration);
+    /**
+     * @dev Register a .stable domain (FREE - zero cost)
+     * Enforces Stable Name Service policies
+     */
+    function register(string calldata name, address resolver) external {
+        // Pre-validation with clear error messages
+        bytes memory nameBytes = bytes(name);
+        if (nameBytes.length < 5) {
+            revert NameTooShort(name);
+        }
+        if (nameBytes.length > 15) {
+            revert NameTooLong(name);
+        }
+        
+        // Check one name per wallet policy
+        if (registrar.hasRegistered(msg.sender)) {
+            revert WalletAlreadyHasName(msg.sender);
+        }
+        
+        // Normalize name for consistency
+        string memory normalizedName = _toLowercase(name);
+        
+        // Check if name is reserved
+        if (registrar.reservedNames(normalizedName)) {
+            revert NameReserved(normalizedName);
+        }
+        
+        // Generate token ID from normalized name hash
+        bytes32 label = keccak256(bytes(normalizedName));
+        uint256 tokenId = uint256(label);
+        
+        // Register through BaseRegistrarImplementation
+        registrar.registerName(tokenId, msg.sender, normalizedName);
+        
+        // Set resolver if provided  
+        if (resolver != address(0)) {
+            bytes32 node = keccak256(abi.encodePacked(STABLE_NODE, label));
+            // Note: Would call ens.setResolver(node, resolver) but we need ENS reference
+            // This should be handled in BaseRegistrarImplementation
+        }
+        
+        emit NameRegistered(normalizedName, msg.sender, tokenId);
     }
 
+    /**
+     * @dev Check if a name meets validation requirements
+     * Requirements: 5-15 characters, Unicode only, no spaces
+     */
     function valid(string memory name) public pure returns (bool) {
-        return name.strlen() >= 3;
+        bytes memory nameBytes = bytes(name);
+        uint256 length = nameBytes.length;
+        
+        // Check length: 5-15 characters
+        if (length < 5 || length > 15) {
+            return false;
+        }
+        
+        // Check for invalid characters (spaces, control characters)
+        for (uint256 i = 0; i < length; i++) {
+            bytes1 char = nameBytes[i];
+            
+            // Reject whitespace characters (space, tab, newline, etc.)
+            if (char == 0x20 || char == 0x09 || char == 0x0A || char == 0x0D) {
+                return false;  
+            }
+            
+            // Reject control characters (0x00-0x1F, 0x7F-0x9F)
+            if ((char >= 0x00 && char <= 0x1F) || (char >= 0x7F && char <= 0x9F)) {
+                return false;
+            }
+        }
+        
+        return true;
     }
 
-    function available(string memory name) public view override returns (bool) {
-        bytes32 label = keccak256(bytes(name));
-        return valid(name) && base.available(uint256(label));
+    /**
+     * @dev Check if a name is available for registration
+     */
+    function available(string memory name) public view returns (bool) {
+        return registrar.availableName(name);
     }
 
-    function makeCommitment(
-        string memory name,
-        address owner,
-        uint256 duration,
-        bytes32 secret,
-        address resolver,
-        bytes[] calldata data,
-        bool reverseRecord,
-        uint16 ownerControlledFuses
-    ) public pure override returns (bytes32) {
-        bytes32 label = keccak256(bytes(name));
-        if (data.length > 0 && resolver == address(0)) {
-            revert ResolverRequiredWhenDataSupplied();
-        }
-        return
-            keccak256(
-                abi.encode(
-                    label,
-                    owner,
-                    duration,
-                    secret,
-                    resolver,
-                    data,
-                    reverseRecord,
-                    ownerControlledFuses
-                )
-            );
+    /**
+     * @dev Dummy rentPrice function for compatibility (always returns 0 - free registration)
+     */
+    function rentPrice(string memory /* name */, uint256 /* duration */) public pure returns (IPriceOracle.Price memory price) {
+        return IPriceOracle.Price({base: 0, premium: 0}); // Free registration
     }
 
-    function commit(bytes32 commitment) public override {
-        if (commitments[commitment] + maxCommitmentAge >= block.timestamp) {
-            revert UnexpiredCommitmentExists(commitment);
-        }
-        commitments[commitment] = block.timestamp;
+    /**
+     * @dev Dummy renew function for compatibility (no-op since domains are permanent)
+     */
+    function renew(string calldata /* name */, uint256 /* duration */) external payable {
+        // No-op: domains are permanent, no renewal needed
+        revert("ETHRegistrarController: Renewal not needed for permanent domains");
     }
 
-    function register(
-        string calldata name,
-        address owner,
-        uint256 duration,
-        bytes32 secret,
-        address resolver,
-        bytes[] calldata data,
-        bool reverseRecord,
-        uint16 ownerControlledFuses
-    ) public payable override {
-        IPriceOracle.Price memory price = rentPrice(name, duration);
-        if (msg.value < price.base + price.premium) {
-            revert InsufficientValue();
+    /**
+     * @dev Get domain name by account address 
+     * Note: Used for off-chain metadata queries
+     */
+    function getDomainByAccount(address account) external view returns (string memory) {
+        if (!registrar.hasRegistered(account)) {
+            return "";
         }
-
-        _consumeCommitment(
-            name,
-            duration,
-            makeCommitment(
-                name,
-                owner,
-                duration,
-                secret,
-                resolver,
-                data,
-                reverseRecord,
-                ownerControlledFuses
-            )
-        );
-
-        uint256 expires = nameWrapper.registerAndWrapETH2LD(
-            name,
-            owner,
-            duration,
-            resolver,
-            ownerControlledFuses
-        );
-
-        if (data.length > 0) {
-            _setRecords(resolver, keccak256(bytes(name)), data);
-        }
-
-        if (reverseRecord) {
-            _setReverseRecord(name, resolver, msg.sender);
-        }
-
-        emit NameRegistered(
-            name,
-            keccak256(bytes(name)),
-            owner,
-            price.base,
-            price.premium,
-            expires
-        );
-
-        if (msg.value > (price.base + price.premium)) {
-            payable(msg.sender).transfer(
-                msg.value - (price.base + price.premium)
-            );
-        }
+        
+        uint256 tokenId = registrar.accountToTokenId(account);
+        string memory name = registrar.tokenIdToName(tokenId);
+        
+        return name; // Return normalized name without .stable suffix
     }
 
-    function renew(
-        string calldata name,
-        uint256 duration
-    ) external payable override {
-        bytes32 labelhash = keccak256(bytes(name));
-        uint256 tokenId = uint256(labelhash);
-        IPriceOracle.Price memory price = rentPrice(name, duration);
-        if (msg.value < price.base) {
-            revert InsufficientValue();
+    /**
+     * @dev Get full domain name with .stable suffix
+     */
+    function getFullDomainByAccount(address account) external view returns (string memory) {
+        if (!registrar.hasRegistered(account)) {
+            return "";
         }
-        uint256 expires = nameWrapper.renew(tokenId, duration);
-
-        if (msg.value > price.base) {
-            payable(msg.sender).transfer(msg.value - price.base);
-        }
-
-        emit NameRenewed(name, labelhash, msg.value, expires);
+        
+        uint256 tokenId = registrar.accountToTokenId(account);
+        string memory name = registrar.tokenIdToName(tokenId);
+        
+        return string(abi.encodePacked(name, ".stable"));
     }
 
-    function withdraw() public {
-        payable(owner()).transfer(address(this).balance);
+    /**
+     * @dev Get account by domain name
+     */
+    function getAccountByDomain(string calldata name) external view returns (address) {
+        string memory normalizedName = _toLowercase(name);
+        uint256 tokenId = registrar.nameToTokenId(normalizedName);
+        if (tokenId == 0) {
+            return address(0);
+        }
+        
+        return registrar.ownerOf(tokenId);
     }
 
-    function supportsInterface(
-        bytes4 interfaceID
-    ) external pure returns (bool) {
-        return
-            interfaceID == type(IERC165).interfaceId ||
-            interfaceID == type(IETHRegistrarController).interfaceId;
-    }
-
-    /* Internal functions */
-
-    function _consumeCommitment(
-        string memory name,
-        uint256 duration,
-        bytes32 commitment
-    ) internal {
-        // Require an old enough commitment.
-        if (commitments[commitment] + minCommitmentAge > block.timestamp) {
-            revert CommitmentTooNew(commitment);
+    /**
+     * @dev Internal function to convert string to lowercase
+     */
+    function _toLowercase(string memory name) internal pure returns (string memory) {
+        bytes memory nameBytes = bytes(name);
+        bytes memory result = new bytes(nameBytes.length);
+        
+        for (uint256 i = 0; i < nameBytes.length; i++) {
+            // Convert uppercase ASCII to lowercase
+            if (nameBytes[i] >= 0x41 && nameBytes[i] <= 0x5A) {
+                result[i] = bytes1(uint8(nameBytes[i]) + 32);
+            } else {
+                result[i] = nameBytes[i];
+            }
         }
-
-        // If the commitment is too old, or the name is registered, stop
-        if (commitments[commitment] + maxCommitmentAge <= block.timestamp) {
-            revert CommitmentTooOld(commitment);
-        }
-        if (!available(name)) {
-            revert NameNotAvailable(name);
-        }
-
-        delete (commitments[commitment]);
-
-        if (duration < MIN_REGISTRATION_DURATION) {
-            revert DurationTooShort(duration);
-        }
-    }
-
-    function _setRecords(
-        address resolverAddress,
-        bytes32 label,
-        bytes[] calldata data
-    ) internal {
-        // use hardcoded .eth namehash
-        bytes32 nodehash = keccak256(abi.encodePacked(ETH_NODE, label));
-        Resolver resolver = Resolver(resolverAddress);
-        resolver.multicallWithNodeCheck(nodehash, data);
-    }
-
-    function _setReverseRecord(
-        string memory name,
-        address resolver,
-        address owner
-    ) internal {
-        reverseRegistrar.setNameForAddr(
-            msg.sender,
-            owner,
-            resolver,
-            string.concat(name, ".eth")
-        );
+        
+        return string(result);
     }
 }

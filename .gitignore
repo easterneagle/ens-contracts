@@ -8,3 +8,6 @@ node_modules
 build
 forge-cache
 out
+.idea
+deploy/
+deploy/

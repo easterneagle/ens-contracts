@@ -12,6 +12,9 @@ contract ENSRegistry is ENS {
 
     mapping(bytes32 => Record) records;
     mapping(address => mapping(address => bool)) operators;
+    
+    // Track if a node has been registered (to prevent ownership changes)
+    mapping(bytes32 => bool) private isRegistered;
 
     // Permits modifications only by the owner of the specified node.
     modifier authorised(bytes32 node) {
@@ -36,6 +39,8 @@ contract ENSRegistry is ENS {
         address resolver,
         uint64 ttl
     ) external virtual override {
+        // Only allow initial registration
+        require(!isRegistered[node], "ENSRegistry: Record already set");
         setOwner(node, owner);
         _setResolverAndTTL(node, resolver, ttl);
     }
@@ -53,8 +58,10 @@ contract ENSRegistry is ENS {
         address resolver,
         uint64 ttl
     ) external virtual override {
-        bytes32 subnode = setSubnodeOwner(node, label, owner);
-        _setResolverAndTTL(subnode, resolver, ttl);
+        // Disable subdomain creation
+        revert("ENSRegistry: Subdomain creation not allowed");
+        // bytes32 subnode = setSubnodeOwner(node, label, owner);
+        // _setResolverAndTTL(subnode, resolver, ttl);
     }
 
     /// @dev Transfers ownership of a node to a new address. May only be called by the current owner of the node.
@@ -64,7 +71,22 @@ contract ENSRegistry is ENS {
         bytes32 node,
         address owner
     ) public virtual override authorised(node) {
+        bytes32 STABLE_NODE = 0xbc67d859e38ff2c79747cbf55827e66700c058ff8a1b8990fb27e9c934ba3b6c;
+        
+        // Prevent ownership changes after initial registration (except for STABLE_NODE and root)
+        if (node != STABLE_NODE && node != bytes32(0)) {
+            require(!isRegistered[node], "ENSRegistry: Ownership change not allowed");
+        }
+        
+        // Allow ownership changes for STABLE_NODE always
+        if (node == STABLE_NODE) {
+            _setOwner(node, owner);
+            emit Transfer(node, owner);
+            return;
+        }
+        
         _setOwner(node, owner);
+        isRegistered[node] = true;
         emit Transfer(node, owner);
     }
 
@@ -77,6 +99,15 @@ contract ENSRegistry is ENS {
         bytes32 label,
         address owner
     ) public virtual override authorised(node) returns (bytes32) {
+        bytes32 STABLE_NODE = 0xbc67d859e38ff2c79747cbf55827e66700c058ff8a1b8990fb27e9c934ba3b6c;
+        
+        // Allow subdomain creation only from:
+        // 1. Root node (0x0) - for TLD setup (.stable)
+        // 2. STABLE_NODE - for domain registration (alice.stable, bob.stable, etc)
+        if (node != bytes32(0) && node != STABLE_NODE) {
+            revert("ENSRegistry: Subdomain creation only allowed from root or stable node");
+        }
+        
         bytes32 subnode = keccak256(abi.encodePacked(node, label));
         _setOwner(subnode, owner);
         emit NewOwner(node, label, owner);
