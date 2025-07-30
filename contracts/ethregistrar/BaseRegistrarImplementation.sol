@@ -1,3 +1,4 @@
+//SPDX-License-Identifier: MIT
 pragma solidity >=0.8.4;
 
 import "../registry/ENS.sol";
@@ -6,15 +7,12 @@ import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract BaseRegistrarImplementation is ERC721, IBaseRegistrar, Ownable {
-    // A map of expiry times
-    mapping(uint256 => uint256) expiries;
     // The ENS registry
     ENS public ens;
-    // The namehash of the TLD this registrar owns (eg, .eth)
+    // The namehash of the TLD this registrar owns (eg, .stable)
     bytes32 public baseNode;
     // A map of addresses that are authorised to register and renew names.
     mapping(address => bool) public controllers;
-    uint256 public constant GRACE_PERIOD = 90 days;
     bytes4 private constant INTERFACE_META_ID =
         bytes4(keccak256("supportsInterface(bytes4)"));
     bytes4 private constant ERC721_ID =
@@ -64,14 +62,12 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar, Ownable {
         _;
     }
 
-    /// @dev Gets the owner of the specified token ID. Names become unowned
-    ///      when their registration expires.
+    /// @dev Gets the owner of the specified token ID.
     /// @param tokenId uint256 ID of the token to query the owner of
     /// @return address currently marked as the owner of the given token ID
     function ownerOf(
         uint256 tokenId
     ) public view override(IERC721, ERC721) returns (address) {
-        require(expiries[tokenId] > block.timestamp);
         return super.ownerOf(tokenId);
     }
 
@@ -93,20 +89,21 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar, Ownable {
     }
 
     // Returns the expiration timestamp of the specified id.
-    function nameExpires(uint256 id) external view override returns (uint256) {
-        return expiries[id];
+    // For non-expiring names, returns 0
+    function nameExpires(uint256) external pure override returns (uint256) {
+        return 0;
     }
 
     // Returns true iff the specified name is available for registration.
     function available(uint256 id) public view override returns (bool) {
-        // Not available if it's registered here or in its grace period.
-        return expiries[id] + GRACE_PERIOD < block.timestamp;
+        // Available only if it has never been minted
+        return !_exists(id);
     }
 
     /// @dev Register a name.
     /// @param id The token ID (keccak256 of the label).
     /// @param owner The address that should own the registration.
-    /// @param duration Duration in seconds for the registration.
+    /// @param duration Duration in seconds for the registration (ignored - names are permanent).
     function register(
         uint256 id,
         address owner,
@@ -118,7 +115,7 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar, Ownable {
     /// @dev Register a name, without modifying the registry.
     /// @param id The token ID (keccak256 of the label).
     /// @param owner The address that should own the registration.
-    /// @param duration Duration in seconds for the registration.
+    /// @param duration Duration in seconds for the registration (ignored - names are permanent).
     function registerOnly(
         uint256 id,
         address owner,
@@ -130,42 +127,29 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar, Ownable {
     function _register(
         uint256 id,
         address owner,
-        uint256 duration,
+        uint256, // duration parameter ignored - names are permanent
         bool updateRegistry
     ) internal live onlyController returns (uint256) {
-        require(available(id));
-        require(
-            block.timestamp + duration + GRACE_PERIOD >
-                block.timestamp + GRACE_PERIOD
-        ); // Prevent future overflow
+        require(available(id), "Name not available");
 
-        expiries[id] = block.timestamp + duration;
-        if (_exists(id)) {
-            // Name was previously owned, and expired
-            _burn(id);
-        }
         _mint(owner, id);
         if (updateRegistry) {
             ens.setSubnodeOwner(baseNode, bytes32(id), owner);
         }
 
-        emit NameRegistered(id, owner, block.timestamp + duration);
+        emit NameRegistered(id, owner, 0);
 
-        return block.timestamp + duration;
+        return 0;
     }
 
     function renew(
         uint256 id,
-        uint256 duration
+        uint256 // duration parameter ignored - names are permanent
     ) external override live onlyController returns (uint256) {
-        require(expiries[id] + GRACE_PERIOD >= block.timestamp); // Name must be registered here or in grace period
-        require(
-            expiries[id] + duration + GRACE_PERIOD > duration + GRACE_PERIOD
-        ); // Prevent future overflow
-
-        expiries[id] += duration;
-        emit NameRenewed(id, expiries[id]);
-        return expiries[id];
+        require(_exists(id), "Token does not exist");
+        // Names are permanent, so renew does nothing
+        emit NameRenewed(id, 0);
+        return 0;
     }
 
     /// @dev Reclaim ownership of a name in ENS, if you own it in the registrar.
@@ -181,5 +165,31 @@ contract BaseRegistrarImplementation is ERC721, IBaseRegistrar, Ownable {
             interfaceID == INTERFACE_META_ID ||
             interfaceID == ERC721_ID ||
             interfaceID == RECLAIM_ID;
+    }
+
+    // Override transfer functions to prevent transfers
+    function transferFrom(
+        address,
+        address,
+        uint256
+    ) public pure override(IERC721, ERC721) {
+        revert("Transfers are not allowed");
+    }
+
+    function safeTransferFrom(
+        address,
+        address,
+        uint256
+    ) public pure override(IERC721, ERC721) {
+        revert("Transfers are not allowed");
+    }
+
+    function safeTransferFrom(
+        address,
+        address,
+        uint256,
+        bytes memory
+    ) public pure override(IERC721, ERC721) {
+        revert("Transfers are not allowed");
     }
 }
