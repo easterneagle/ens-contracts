@@ -146,13 +146,11 @@ contract ETHRegistrarController is
         // Register with BaseRegistrarImplementation (creates NFT and ENS node)
         base.register(tokenId, owner, 0);
 
-        // Set both owner and resolver in ENS registry in one call
-        // This works because BaseRegistrar owns the .stable node
-//        if (resolver != address(0)) {
-//            ens.setSubnodeRecord(STABLE_NODE, label, owner, resolver, 0);
-//        } else {
-//            ens.setSubnodeOwner(STABLE_NODE, label, owner);
-//        }
+        // Set resolver and address record if provided
+        if (resolver != address(0)) {
+            ens.setResolver(node, resolver);
+            _setRecord(resolver, node, owner);
+        }
 
         // Set reverse record if requested
         if (reverseRecord) {

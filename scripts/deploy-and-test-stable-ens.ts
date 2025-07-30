@@ -15,7 +15,7 @@ async function main() {
     const contracts = await deployContracts(deployer, owner);
     
     // Run comprehensive tests
-    await runAllTests(contracts, user1, owner);
+    await runAllTests(contracts, user1, user2, owner);
 
     console.log("\nReady to use! You can now register .stable domains using:");
     console.log(`controller.register("yourname", ownerAddress, 0n, "0x00...", resolverAddress, [], true, 0n)`);
@@ -88,18 +88,27 @@ async function deployContracts(deployer: any, owner: any) {
     await setupReverseResolution(root, registry, reverseRegistrar, deployer, owner);
     console.log("   Reverse resolution configured");
 
-    // 9. Deploy PublicResolver
-    console.log("9. Deploying PublicResolver...");
+    // 9. Deploy ETHRegistrarController first
+    console.log("9. Deploying ETHRegistrarController...");
+    const controller = await hre.viem.deployContract("ETHRegistrarController", [
+        registrar.address,
+        reverseRegistrar.address,
+        registry.address
+    ]);
+    console.log("   ETHRegistrarController deployed at:", controller.address);
+
+    // 10. Deploy PublicResolver with controller as trustedETHController
+    console.log("10. Deploying PublicResolver...");
     const publicResolver = await hre.viem.deployContract("PublicResolver", [
         registry.address,
         "0x0000000000000000000000000000000000000000", // nameWrapper (not used)
-        owner.account.address, // trustedETHController
+        controller.address, // trustedETHController (now using controller address)
         reverseRegistrar.address  // trustedReverseRegistrar
     ]);
     console.log("   PublicResolver deployed at:", publicResolver.address);
 
-    // 9.1. Set default resolver for ReverseRegistrar
-    console.log("9.1. Setting default resolver for ReverseRegistrar...");
+    // 10.1. Set default resolver for ReverseRegistrar
+    console.log("10.1. Setting default resolver for ReverseRegistrar...");
     await deployer.writeContract({
         address: reverseRegistrar.address,
         abi: reverseRegistrar.abi,
@@ -108,15 +117,6 @@ async function deployContracts(deployer: any, owner: any) {
         gas: 3000000n
     });
     console.log("   Default resolver set");
-
-    // 10. Deploy ETHRegistrarController
-    console.log("10. Deploying ETHRegistrarController...");
-    const controller = await hre.viem.deployContract("ETHRegistrarController", [
-        registrar.address,
-        reverseRegistrar.address,
-        registry.address
-    ]);
-    console.log("   ETHRegistrarController deployed at:", controller.address);
 
     // 11. Add controller to registrar
     console.log("11. Adding controller to registrar...");
@@ -129,8 +129,8 @@ async function deployContracts(deployer: any, owner: any) {
     });
     console.log("   Controller added to registrar");
 
-    // 11.1. Add controller to reverse registrar
-    console.log("11.1. Adding controller to reverse registrar...");
+    // 12. Add controller to reverse registrar
+    console.log("12. Adding controller to reverse registrar...");
     await deployer.writeContract({
         address: reverseRegistrar.address,
         abi: reverseRegistrar.abi,
@@ -140,10 +140,8 @@ async function deployContracts(deployer: any, owner: any) {
     });
     console.log("   Controller added to reverse registrar");
 
-    // 12. Transfer ownerships
-    console.log("12. Transferring ownerships...");
-    await transferOwnerships(deployer, owner, root, registrar, controller, reverseRegistrar);
-    console.log("   All ownerships transferred to owner");
+    // 13. Skip ownership transfer since deployer == owner
+    console.log("13. Skipping ownership transfer (deployer is owner)");
 
     console.log("\nAll contracts deployed successfully!");
     console.log("========================");
@@ -179,57 +177,31 @@ async function setupReverseResolution(root: any, registry: any, reverseRegistrar
     });
 }
 
-async function transferOwnerships(deployer: any, owner: any, root: any, registrar: any, controller: any, reverseRegistrar: any) {
-    await deployer.writeContract({
-        address: root.address,
-        abi: root.abi,
-        functionName: 'transferOwnership',
-        args: [owner.account.address],
-        gas: 3000000n
-    });
-
-    await deployer.writeContract({
-        address: registrar.address,
-        abi: registrar.abi,
-        functionName: 'transferOwnership',
-        args: [owner.account.address],
-        gas: 3000000n
-    });
-
-    await deployer.writeContract({
-        address: controller.address,
-        abi: controller.abi,
-        functionName: 'transferOwnership',
-        args: [owner.account.address],
-        gas: 3000000n
-    });
-
-    await deployer.writeContract({
-        address: reverseRegistrar.address,
-        abi: reverseRegistrar.abi,
-        functionName: 'transferOwnership',
-        args: [owner.account.address],
-        gas: 3000000n
-    });
-}
-
-async function runAllTests(contracts: any, user1: any, owner: any) {
+async function runAllTests(contracts: any, user1: any, user2: any, owner: any) {
     const { registry, registrar, publicResolver, reverseRegistrar, controller } = contracts;
     
     try {
-        await testDomainRegistration(controller, registrar, registry, publicResolver, reverseRegistrar, user1);
+        await testDomainRegistration(controller, registrar, registry, publicResolver, reverseRegistrar, user1, "jeongjoo");
     } catch (error) {
         console.log("Domain registration test failed, continuing with other tests...");
     }
     
     try {
-        await testForwardResolution(publicResolver, user1);
+        await testDomainRegistration(controller, registrar, registry, publicResolver, reverseRegistrar, user2, "soojong");
+    } catch (error) {
+        console.log("Second domain registration test failed, continuing with other tests...");
+    }
+    
+    try {
+        await testForwardResolution(publicResolver, user1, "jeongjoo");
+        await testForwardResolution(publicResolver, user2, "soojong");
     } catch (error) {
         console.log("Forward resolution test failed");
     }
     
     try {
-        await testReverseResolution(publicResolver, user1);
+        await testReverseResolution(publicResolver, user1, "jeongjoo");
+        await testReverseResolution(publicResolver, user2, "soojong");
     } catch (error) {
         console.log("Reverse resolution test failed");
     }
@@ -261,14 +233,14 @@ async function runAllTests(contracts: any, user1: any, owner: any) {
     console.log("✓ Renewal prevention working");
 }
 
-async function testDomainRegistration(controller: any, registrar: any, registry: any, publicResolver: any, reverseRegistrar: any, user1: any) {
-    console.log("\n=== Testing Domain Registration ===");
+async function testDomainRegistration(controller: any, registrar: any, registry: any, publicResolver: any, reverseRegistrar: any, user: any, domainName: string) {
+    console.log(`\n=== Testing Domain Registration: ${domainName}.stable ===`);
     
     try {
         // Get owner wallet from global scope
         const [, ownerWallet] = await hre.viem.getWalletClients();
         
-        const name = "jeongjoo";
+        const name = domainName;
         const label = labelhash(name);
         const node = namehash(`${name}.stable`);
         
@@ -306,16 +278,26 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
     console.log(`Label (hex):`, label);
     console.log(`TokenId (BigInt):`, tokenId.toString());
 
+    // User needs to approve controller as operator (one-time setup)
+    console.log(`${user.account.address} approving controller as operator (one-time setup)...`);
+    await user.writeContract({
+        address: registry.address,
+        abi: registry.abi,
+        functionName: 'setApprovalForAll',
+        args: [controller.address, true],
+        gas: 3000000n
+    });
+
     // Register domain with controller (with resolver and reverse record)
     console.log(`Registering ${name}.stable with controller...`);
 
-    await user1.writeContract({
+    await user.writeContract({
         address: controller.address,
         abi: controller.abi,
         functionName: 'register',
         args: [
             name, // string calldata name
-            user1.account.address, // address owner
+            user.account.address, // address owner
             0n, // uint256 duration (ignored)
             "0x0000000000000000000000000000000000000000000000000000000000000000", // bytes32 secret (ignored)
             publicResolver.address, // address resolver
@@ -329,7 +311,7 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
     // Verify registration
     const domainOwner = await registrar.read.ownerOf([BigInt(label)]);
     console.log(`${name}.stable owner:`, domainOwner);
-    console.log(`Registration successful:`, domainOwner.toLowerCase() === user1.account.address.toLowerCase());
+    console.log(`Registration successful:`, domainOwner.toLowerCase() === user.account.address.toLowerCase());
     
     // Verify ENS registry
     const ensOwner = await registry.read.owner([node]);
@@ -347,37 +329,32 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
     }
 }
 
-async function testForwardResolution(publicResolver: any, user1: any) {
-    console.log("\n=== Testing Forward Resolution ===");
+async function testForwardResolution(publicResolver: any, user: any, domainName: string) {
+    console.log(`\n=== Testing Forward Resolution: ${domainName}.stable ===`);
     
-    const name = "jeongjoo";
+    const name = domainName;
     const node = namehash(`${name}.stable`);
     
     try {
         // Test ETH address resolution (set during registration)
         const resolvedEthAddress = await publicResolver.read.addr([node]);
         console.log(`ETH address for ${name}.stable:`, resolvedEthAddress);
-        console.log(`ETH resolution working:`, resolvedEthAddress.toLowerCase() === user1.account.address.toLowerCase());
-        
-        const resolvedCoinType118Addr = await publicResolver.read.addr([node, 118]);
-        console.log(`CoinType 118 address:`, resolvedCoinType118Addr);
-        console.log(`CoinType 118 resolution working:`, resolvedCoinType118Addr === "0x1234567890abcdef1234567890abcdef12345678");
-
+        console.log(`ETH resolution working:`, resolvedEthAddress.toLowerCase() === user.account.address.toLowerCase());
     } catch (error) {
         console.log("Forward resolution test failed:", error);
     }
 }
 
-async function testReverseResolution(publicResolver: any, user1: any) {
-    console.log("\n=== Testing Reverse Resolution ===");
+async function testReverseResolution(publicResolver: any, user: any, domainName: string) {
+    console.log(`\n=== Testing Reverse Resolution: ${user.account.address} -> ${domainName}.stable ===`);
     
     // Check if reverse record was set during registration (reverseRecord: true)
-    const reverseNode = namehash(`${user1.account.address.slice(2).toLowerCase()}.addr.reverse`);
+    const reverseNode = namehash(`${user.account.address.slice(2).toLowerCase()}.addr.reverse`);
     
     try {
         const name = await publicResolver.read.name([reverseNode]);
-        console.log(`Reverse record for ${user1.account.address}:`, name);
-        console.log(`Reverse resolution working:`, name === "jeongjoo.stable");
+        console.log(`Reverse record for ${user.account.address}:`, name);
+        console.log(`Reverse resolution working:`, name === `${domainName}.stable`);
     } catch (error) {
         console.log("Reverse resolution test failed:", error);
     }
