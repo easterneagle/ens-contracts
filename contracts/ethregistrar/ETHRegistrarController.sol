@@ -25,6 +25,11 @@ error InsufficientValue();
 error Unauthorised(bytes32 node);
 error MaxCommitmentAgeTooLow();
 error MaxCommitmentAgeTooHigh();
+error NameTooShort(string name);
+error NameTooLong(string name);
+error InvalidCharacters(string name);
+error WalletAlreadyOwnsName(address wallet);
+error NameRestricted(string name);
 
 /// @dev A registrar controller for registering and renewing names at fixed cost.
 contract ETHRegistrarController is
@@ -42,6 +47,12 @@ contract ETHRegistrarController is
     BaseRegistrarImplementation immutable base;
     ReverseRegistrar public immutable reverseRegistrar;
     ENS public immutable ens;
+    
+    // Mapping to track if a wallet already owns a name
+    mapping(address => bool) public hasRegisteredName;
+    
+    // Mapping for restricted names
+    mapping(bytes32 => bool) public restrictedNames;
 
     event NameRegistered(
         string name,
@@ -66,6 +77,9 @@ contract ETHRegistrarController is
         base = _base;
         reverseRegistrar = _reverseRegistrar;
         ens = _ens;
+        
+        // Initialize restricted names
+        _initializeRestrictedNames();
     }
 
     function rentPrice(
@@ -77,7 +91,46 @@ contract ETHRegistrarController is
     }
 
     function valid(string memory name) public pure returns (bool) {
-        return name.strlen() >= 3;
+        uint256 len = name.strlen();
+        return len >= 5 && len <= 15;
+    }
+    
+    function validateName(string memory name) public view returns (bool) {
+        // Check length (5-15 characters)
+        uint256 len = name.strlen();
+        if (len < 5) revert NameTooShort(name);
+        if (len > 15) revert NameTooLong(name);
+        
+        // Check for restricted names
+        bytes32 nameHash = keccak256(bytes(_toLowerCase(name)));
+        if (restrictedNames[nameHash]) revert NameRestricted(name);
+        
+        // Check for invalid characters (basic check for spaces)
+        bytes memory nameBytes = bytes(name);
+        for (uint i = 0; i < nameBytes.length; i++) {
+            bytes1 char = nameBytes[i];
+            // Reject spaces and common invalid characters
+            if (char == 0x20) revert InvalidCharacters(name); // space
+        }
+        
+        return true;
+    }
+    
+    function _toLowerCase(string memory name) internal pure returns (string memory) {
+        bytes memory nameBytes = bytes(name);
+        bytes memory lowerName = new bytes(nameBytes.length);
+        
+        for (uint i = 0; i < nameBytes.length; i++) {
+            bytes1 char = nameBytes[i];
+            // Convert A-Z to a-z
+            if (char >= 0x41 && char <= 0x5A) {
+                lowerName[i] = bytes1(uint8(char) + 32);
+            } else {
+                lowerName[i] = char;
+            }
+        }
+        
+        return string(lowerName);
     }
 
     function available(string memory name) public override returns (bool) {
@@ -136,10 +189,21 @@ contract ETHRegistrarController is
             revert ResolverRequiredWhenDataSupplied();
         }
         
-        // Basic availability check
-        require(available(name), "Name not available");
+        // Check if wallet already owns a name
+        if (hasRegisteredName[owner]) {
+            revert WalletAlreadyOwnsName(owner);
+        }
         
-        bytes32 label = keccak256(bytes(name));
+        // Validate name (length, characters, restrictions)
+        validateName(name);
+        
+        // Convert name to lowercase for consistency
+        string memory lowerName = _toLowerCase(name);
+        
+        // Basic availability check with lowercase name
+        require(available(lowerName), "Name not available");
+        
+        bytes32 label = keccak256(bytes(lowerName));
         bytes32 node = keccak256(abi.encodePacked(STABLE_NODE, label));
         uint256 tokenId = uint256(label);
         
@@ -152,13 +216,16 @@ contract ETHRegistrarController is
             _setRecord(resolver, node, owner);
         }
 
-        // Set reverse record if requested
+        // Set reverse record if requested (use lowercase name)
         if (reverseRecord) {
-            _setReverseRecord(name, resolver, owner);
+            _setReverseRecord(lowerName, resolver, owner);
         }
+        
+        // Mark wallet as having registered a name
+        hasRegisteredName[owner] = true;
 
         emit NameRegistered(
-            name,
+            lowerName, // Use lowercase name
             label,
             owner,
             0, // base cost
@@ -214,5 +281,36 @@ contract ETHRegistrarController is
             resolver,
             string.concat(name, ".stable")
         );
+    }
+    
+    function _initializeRestrictedNames() internal {
+        // Common restricted names to prevent scams/impersonation
+        string[20] memory restricted = [
+            "stable", "admin", "root", "system", "owner",
+            "binance", "tether", "usdt", "usdc", "ethereum",
+            "bitcoin", "cosmos", "official", "support", "help",
+            "service", "team", "foundation", "protocol", "network"
+        ];
+        
+        for (uint i = 0; i < restricted.length; i++) {
+            bytes32 nameHash = keccak256(bytes(restricted[i]));
+            restrictedNames[nameHash] = true;
+        }
+    }
+    
+    // Admin functions for managing restricted names
+    function addRestrictedName(string calldata name) external onlyOwner {
+        bytes32 nameHash = keccak256(bytes(_toLowerCase(name)));
+        restrictedNames[nameHash] = true;
+    }
+    
+    function removeRestrictedName(string calldata name) external onlyOwner {
+        bytes32 nameHash = keccak256(bytes(_toLowerCase(name)));
+        restrictedNames[nameHash] = false;
+    }
+    
+    function isRestricted(string calldata name) external view returns (bool) {
+        bytes32 nameHash = keccak256(bytes(_toLowerCase(name)));
+        return restrictedNames[nameHash];
     }
 }

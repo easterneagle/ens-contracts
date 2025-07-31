@@ -189,6 +189,19 @@ async function runAllTests(contracts: any, user1: any, user2: any, deployer: any
         console.log("Second domain registration test failed, continuing with other tests...");
     }
     
+    // Test new requirements
+    try {
+        await testNameValidation(controller);
+    } catch (error) {
+        console.log("Name validation test failed:", error);
+    }
+    
+    try {
+        await testOneNamePerWallet(controller, publicResolver, user1);
+    } catch (error) {
+        console.log("One name per wallet test failed:", error);
+    }
+    
     try {
         await testForwardResolution(publicResolver, user1, "jeongjoo");
         await testForwardResolution(publicResolver, user2, "soojong");
@@ -404,6 +417,82 @@ async function testRenewalPrevention(controller: any, deployer: any) {
         console.log("Renewal prevention FAILED - renewal was allowed");
     } catch (error) {
         console.log("Renewal prevention working - renewal reverted as expected");
+    }
+}
+
+async function testNameValidation(controller: any) {
+    console.log("\\n=== Testing Name Validation ===");
+    
+    // Test name length validation
+    try {
+        await controller.read.validateName(["abc"]); // Too short
+        console.log("Length validation FAILED - short name was accepted");
+    } catch (error) {
+        console.log("✓ Short name rejected (< 5 chars)");
+    }
+    
+    try {
+        await controller.read.validateName(["abcdefghijklmnopqrstuvwxyz"]); // Too long
+        console.log("Length validation FAILED - long name was accepted");
+    } catch (error) {
+        console.log("✓ Long name rejected (> 15 chars)");
+    }
+    
+    // Test restricted names
+    try {
+        await controller.read.validateName(["stable"]); // Restricted
+        console.log("Restriction validation FAILED - restricted name was accepted");
+    } catch (error) {
+        console.log("✓ Restricted name rejected");
+    }
+    
+    // Test invalid characters
+    try {
+        await controller.read.validateName(["test name"]); // Contains space
+        console.log("Character validation FAILED - name with space was accepted");
+    } catch (error) {
+        console.log("✓ Name with space rejected");
+    }
+    
+    // Test valid name
+    try {
+        await controller.read.validateName(["validname"]);
+        console.log("✓ Valid name accepted");
+    } catch (error) {
+        console.log("Valid name validation FAILED:", error);
+    }
+}
+
+async function testOneNamePerWallet(controller: any, publicResolver: any, user: any) {
+    console.log("\\n=== Testing One Name Per Wallet ===");
+    
+    // Check if user already has a name
+    const hasName = await controller.read.hasRegisteredName([user.account.address]);
+    console.log(`User ${user.account.address} has registered name:`, hasName);
+    
+    if (hasName) {
+        // Try to register another name (should fail)
+        try {
+            await user.writeContract({
+                address: controller.address,
+                abi: controller.abi,
+                functionName: 'register',
+                args: [
+                    "anothername",
+                    user.account.address,
+                    0n,
+                    "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    publicResolver.address,
+                    [],
+                    false,
+                    0n
+                ],
+                gas: 3000000n
+            });
+            console.log("One name per wallet FAILED - second registration was allowed");
+        } catch (error) {
+            console.log("✓ Second name registration rejected");
+        }
     }
 }
 
