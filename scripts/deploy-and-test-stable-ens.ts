@@ -421,7 +421,7 @@ async function testRenewalPrevention(controller: any, deployer: any) {
 }
 
 async function testNameValidation(controller: any) {
-    console.log("\\n=== Testing Name Validation ===");
+    console.log("\n=== Testing Name Validation ===");
     
     // Test name length validation
     try {
@@ -454,6 +454,21 @@ async function testNameValidation(controller: any) {
         console.log("✓ Name with space rejected");
     }
     
+    // Test subdomain-like names (containing dots)
+    try {
+        await controller.read.validateName(["lee.jeongjoo"]); // Contains dot
+        console.log("Dot validation FAILED - name with dot was accepted");
+    } catch (error) {
+        console.log("✓ Subdomain-like name rejected");
+    }
+    
+    try {
+        await controller.read.validateName(["api.service"]); // Another dot test
+        console.log("Dot validation FAILED - subdomain-like name was accepted");
+    } catch (error) {
+        console.log("✓ Subdomain-like name rejected (api.service)");
+    }
+    
     // Test valid name
     try {
         await controller.read.validateName(["validname"]);
@@ -464,7 +479,7 @@ async function testNameValidation(controller: any) {
 }
 
 async function testOneNamePerWallet(controller: any, publicResolver: any, user: any) {
-    console.log("\\n=== Testing One Name Per Wallet ===");
+    console.log("\n=== Testing One Name Per Wallet ===");
     
     // Check if user already has a name
     const hasName = await controller.read.hasRegisteredName([user.account.address]);

@@ -105,11 +105,13 @@ contract ETHRegistrarController is
         bytes32 nameHash = keccak256(bytes(_toLowerCase(name)));
         if (restrictedNames[nameHash]) revert NameRestricted(name);
         
-        // Check for invalid characters (basic check for spaces)
+        // Check for invalid characters (dots, spaces, etc.)
         bytes memory nameBytes = bytes(name);
         for (uint i = 0; i < nameBytes.length; i++) {
             bytes1 char = nameBytes[i];
-            // Reject spaces and common invalid characters
+            // Reject dots (prevent subdomain-like names)
+            if (char == 0x2E) revert InvalidCharacters(name); // dot "."
+            // Reject spaces and other invalid characters
             if (char == 0x20) revert InvalidCharacters(name); // space
         }
         

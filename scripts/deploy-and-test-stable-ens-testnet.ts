@@ -691,6 +691,14 @@ async function testNameValidation(controller: any) {
         console.log("    Name with space rejected");
     }
     
+    // Test subdomain-like names (containing dots)
+    try {
+        await controllerContract.read.validateName(["lee.jeongjoo"]); // Contains dot
+        console.log("    Dot validation FAILED - name with dot was accepted");
+    } catch (error) {
+        console.log("    Subdomain-like name rejected");
+    }
+    
     // Test valid name
     try {
         await controllerContract.read.validateName(["validname"]);
