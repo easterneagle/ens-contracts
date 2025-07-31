@@ -11,7 +11,6 @@ import 'hardhat-abi-exporter'
 import 'hardhat-contract-sizer'
 import 'hardhat-deploy'
 import { HardhatUserConfig } from 'hardhat/config'
-
 import('@ensdomains/hardhat-chai-matchers-viem')
 
 // hardhat actions
@@ -28,6 +27,16 @@ if (process.env.DEPLOYER_KEY) {
   real_accounts = [
     process.env.DEPLOYER_KEY,
     process.env.OWNER_KEY || process.env.DEPLOYER_KEY,
+  ]
+}
+
+// Stable testnet accounts
+let stable_testnet_accounts = undefined
+if (process.env.STABLE_TESTNET_PK1) {
+  stable_testnet_accounts = [
+    process.env.STABLE_TESTNET_PK1,
+    process.env.STABLE_TESTNET_PK2 || process.env.STABLE_TESTNET_PK1,
+    process.env.STABLE_TESTNET_PK3 || process.env.STABLE_TESTNET_PK1,
   ]
 }
 
@@ -85,6 +94,14 @@ const config = {
       tags: ['legacy', 'use_root'],
       chainId: 1,
       accounts: real_accounts,
+    },
+    stable_testnet: {
+      url: 'https://stable-jsonrpc.testnet.chain0.dev',
+      tags: ['test', 'stable', 'use_root'],
+      chainId: 2201,
+      accounts: stable_testnet_accounts,
+      gasPrice: 'auto',
+      gas: 'auto',
     },
   },
   mocha: {},
