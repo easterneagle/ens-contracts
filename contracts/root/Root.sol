@@ -17,6 +17,8 @@ contract Root is Ownable, Controllable {
 
     constructor(ENS _ens) public {
         ens = _ens;
+        // Automatically add deployer as controller
+        controllers[msg.sender] = true;
     }
 
     function setSubnodeOwner(

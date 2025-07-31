@@ -80,7 +80,7 @@ contract ETHRegistrarController is
         return name.strlen() >= 3;
     }
 
-    function available(string memory name) public view override returns (bool) {
+    function available(string memory name) public override returns (bool) {
         bytes32 label = keccak256(bytes(name));
         bool isValid = valid(name);
         bool isBaseAvailable = base.available(uint256(label));
@@ -130,7 +130,7 @@ contract ETHRegistrarController is
         bytes[] calldata data,
         bool reverseRecord,
         uint16 ownerControlledFuses // ownerControlledFuses ignored
-    ) public override {
+    ) public payable override {
         // Check data/resolver constraint first
         if (data.length > 0 && resolver == address(0)) {
             revert ResolverRequiredWhenDataSupplied();
@@ -165,6 +165,11 @@ contract ETHRegistrarController is
             0, // premium 
             0  // expires (permanent)
         );
+
+        // Refund any stable coin sent (registration is free)
+        if (msg.value > 0) {
+            payable(msg.sender).transfer(msg.value);
+        }
     }
 
     function renew(

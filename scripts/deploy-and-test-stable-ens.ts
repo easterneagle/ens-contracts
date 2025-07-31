@@ -1,38 +1,41 @@
 import hre from "hardhat";
-import { namehash, labelhash, encodeFunctionData, keccak256, toHex } from "viem";
+import { namehash, labelhash, encodeFunctionData, keccak256, toHex, parseEther, formatEther } from "viem";
 
 async function main() {
-    console.log("Deploying and Testing Minimal Stable ENS System");
+    console.log("\n\nDeploying and Testing Stable Name Service");
 
-    const [deployer, owner, user1, user2] = await hre.viem.getWalletClients();
+    const [deployer, user1, user2] = await hre.viem.getWalletClients();
     console.log("Deployer:", deployer.account.address);
-    console.log("Owner:", owner.account.address);
-    console.log("User1:", user1.account.address);
-    console.log("User2:", user2.account.address);
+    console.log("User1 (jeongjoo):", user1.account.address);
+    console.log("User2 (soojong):", user2.account.address);
     console.log("");
 
     // Deploy all contracts
-    const contracts = await deployContracts(deployer, owner);
+    const contracts = await deployContracts(deployer);
     
     // Run comprehensive tests
-    await runAllTests(contracts, user1, user2, owner);
+    await runAllTests(contracts, user1, user2, deployer);
 
     console.log("\nReady to use! You can now register .stable domains using:");
     console.log(`controller.register("yourname", ownerAddress, 0n, "0x00...", resolverAddress, [], true, 0n)`);
 }
 
-async function deployContracts(deployer: any, owner: any) {
+async function deployContracts(deployer: any) {
     const STABLE_NODE = namehash("stable");
     console.log("Stable node hash:", STABLE_NODE);
     
     // 1. Deploy ENSRegistry
     console.log("1. Deploying ENSRegistry...");
-    const registry = await hre.viem.deployContract("ENSRegistry", []);
+    const registry = await hre.viem.deployContract("ENSRegistry", [], {
+        client: { wallet: deployer }
+    });
     console.log("   ENSRegistry deployed at:", registry.address);
 
     // 2. Deploy Root
     console.log("2. Deploying Root...");  
-    const root = await hre.viem.deployContract("Root", [registry.address]);
+    const root = await hre.viem.deployContract("Root", [registry.address], {
+        client: { wallet: deployer }
+    });
     console.log("   Root deployed at:", root.address);
 
     // 3. Set Root as owner of root node
@@ -51,22 +54,13 @@ async function deployContracts(deployer: any, owner: any) {
     const registrar = await hre.viem.deployContract("BaseRegistrarImplementation", [
         registry.address,
         STABLE_NODE
-    ]);
+    ], {
+        client: { wallet: deployer }
+    });
     console.log("   BaseRegistrarImplementation deployed at:", registrar.address);
 
-    // 5. Add deployer as controller to Root
-    console.log("5. Adding deployer as controller to Root...");
-    await deployer.writeContract({
-        address: root.address,
-        abi: root.abi,
-        functionName: 'setController',
-        args: [deployer.account.address, true],
-        gas: 3000000n
-    });
-    console.log("   Deployer added as controller to Root");
-
-    // 6. Set registrar as owner of .stable
-    console.log("6. Setting registrar as owner of .stable...");
+    // 5. Set registrar as owner of .stable
+    console.log("5. Setting registrar as owner of .stable...");
     await deployer.writeContract({
         address: root.address,
         abi: root.abi,
@@ -80,12 +74,14 @@ async function deployContracts(deployer: any, owner: any) {
     console.log("7. Deploying ReverseRegistrar...");
     const reverseRegistrar = await hre.viem.deployContract("ReverseRegistrar", [
         registry.address
-    ]);
+    ], {
+        client: { wallet: deployer }
+    });
     console.log("   ReverseRegistrar deployed at:", reverseRegistrar.address);
 
     // 8. Set up reverse resolution
     console.log("8. Setting up reverse resolution...");
-    await setupReverseResolution(root, registry, reverseRegistrar, deployer, owner);
+    await setupReverseResolution(root, registry, reverseRegistrar, deployer);
     console.log("   Reverse resolution configured");
 
     // 9. Deploy ETHRegistrarController first
@@ -94,7 +90,9 @@ async function deployContracts(deployer: any, owner: any) {
         registrar.address,
         reverseRegistrar.address,
         registry.address
-    ]);
+    ], {
+        client: { wallet: deployer }
+    });
     console.log("   ETHRegistrarController deployed at:", controller.address);
 
     // 10. Deploy PublicResolver with controller as trustedETHController
@@ -104,7 +102,9 @@ async function deployContracts(deployer: any, owner: any) {
         "0x0000000000000000000000000000000000000000", // nameWrapper (not used)
         controller.address, // trustedETHController (now using controller address)
         reverseRegistrar.address  // trustedReverseRegistrar
-    ]);
+    ], {
+        client: { wallet: deployer }
+    });
     console.log("   PublicResolver deployed at:", publicResolver.address);
 
     // 10.1. Set default resolver for ReverseRegistrar
@@ -140,9 +140,6 @@ async function deployContracts(deployer: any, owner: any) {
     });
     console.log("   Controller added to reverse registrar");
 
-    // 13. Skip ownership transfer since deployer == owner
-    console.log("13. Skipping ownership transfer (deployer is owner)");
-
     console.log("\nAll contracts deployed successfully!");
     console.log("========================");
     console.log("ENSRegistry:", registry.address);
@@ -156,19 +153,19 @@ async function deployContracts(deployer: any, owner: any) {
     return { registry, root, registrar, publicResolver, reverseRegistrar, controller };
 }
 
-async function setupReverseResolution(root: any, registry: any, reverseRegistrar: any, deployer: any, owner: any) {
+async function setupReverseResolution(root: any, registry: any, reverseRegistrar: any, deployer: any) {
     // Set owner of .reverse (deployer has root ownership at this point)
     await deployer.writeContract({
         address: root.address,
         abi: root.abi,
         functionName: 'setSubnodeOwner',
-        args: [labelhash('reverse'), owner.account.address],
+        args: [labelhash('reverse'), deployer.account.address],
         gas: 3000000n
     });
 
-    // Set ReverseRegistrar as owner of .addr.reverse (owner now owns .reverse)
+    // Set ReverseRegistrar as owner of .addr.reverse
     const reverseNode = namehash('reverse');
-    await owner.writeContract({
+    await deployer.writeContract({
         address: registry.address,
         abi: registry.abi,
         functionName: 'setSubnodeOwner',
@@ -177,7 +174,7 @@ async function setupReverseResolution(root: any, registry: any, reverseRegistrar
     });
 }
 
-async function runAllTests(contracts: any, user1: any, user2: any, owner: any) {
+async function runAllTests(contracts: any, user1: any, user2: any, deployer: any) {
     const { registry, registrar, publicResolver, reverseRegistrar, controller } = contracts;
     
     try {
@@ -207,7 +204,7 @@ async function runAllTests(contracts: any, user1: any, user2: any, owner: any) {
     }
     
     try {
-        await testTransferPrevention(registrar, user1, owner);
+        await testTransferPrevention(registrar, user1, deployer);
     } catch (error) {
         console.log("Transfer prevention test failed");
     }
@@ -219,7 +216,7 @@ async function runAllTests(contracts: any, user1: any, user2: any, owner: any) {
     }
     
     try {
-        await testRenewalPrevention(controller, owner);
+        await testRenewalPrevention(controller, deployer);
     } catch (error) {
         console.log("Renewal prevention test failed");
     }
@@ -237,9 +234,6 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
     console.log(`\n=== Testing Domain Registration: ${domainName}.stable ===`);
     
     try {
-        // Get owner wallet from global scope
-        const [, ownerWallet] = await hre.viem.getWalletClients();
-        
         const name = domainName;
         const label = labelhash(name);
         const node = namehash(`${name}.stable`);
@@ -255,10 +249,6 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
     // Debug: Check if controller is added to registrar
     const isController = await registrar.read.controllers([controller.address]);
     console.log(`Controller is authorized:`, isController);
-    
-    // Debug: Check if ownerWallet is controller (for direct registration)
-    const isOwnerController = await registrar.read.controllers([ownerWallet.account.address]);
-    console.log(`Owner is controller:`, isOwnerController);
     
     // Debug: Check if controller is added to reverse registrar
     const isControllerInReverseRegistrar = await reverseRegistrar.read.controllers([controller.address]);
@@ -290,6 +280,10 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
 
     // Register domain with controller (with resolver and reverse record)
     console.log(`Registering ${name}.stable with controller...`);
+    
+    // Get user balance before registration
+    const publicClient = await hre.viem.getPublicClient();
+    const balanceBefore = await publicClient.getBalance({ address: user.account.address });
 
     await user.writeContract({
         address: controller.address,
@@ -305,8 +299,16 @@ async function testDomainRegistration(controller: any, registrar: any, registry:
             true, // bool reverseRecord
             0n // uint16 ownerControlledFuses (ignored)
         ],
-        gas: 3000000n
+        gas: 3000000n,
+        value: domainName === "jeongjoo" ? parseEther("0.1") : 0n // Test ETH refund with first domain
     });
+    
+    // Check balance after registration to verify refund
+    const balanceAfter = await publicClient.getBalance({ address: user.account.address });
+    if (domainName === "jeongjoo") {
+        console.log(`coin refund test - sent 0.1 stable, balance difference (gas only):`,
+            formatEther(balanceBefore - balanceAfter), "stable");
+    }
     
     // Verify registration
     const domainOwner = await registrar.read.ownerOf([BigInt(label)]);
@@ -360,7 +362,7 @@ async function testReverseResolution(publicResolver: any, user: any, domainName:
     }
 }
 
-async function testTransferPrevention(registrar: any, user1: any, owner: any) {
+async function testTransferPrevention(registrar: any, user1: any, deployer: any) {
     console.log("\n=== Testing Transfer Prevention ===");
     
     const name = "jeongjoo";
@@ -371,7 +373,7 @@ async function testTransferPrevention(registrar: any, user1: any, owner: any) {
             address: registrar.address,
             abi: registrar.abi,
             functionName: 'transferFrom',
-            args: [user1.account.address, owner.account.address, tokenId],
+            args: [user1.account.address, deployer.account.address, tokenId],
             gas: 3000000n
         });
         console.log("Transfer prevention FAILED - transfer was allowed");
@@ -388,11 +390,11 @@ async function testPricing(controller: any) {
     console.log(`Free pricing confirmed:`, price.base === 0n && price.premium === 0n);
 }
 
-async function testRenewalPrevention(controller: any, owner: any) {
+async function testRenewalPrevention(controller: any, deployer: any) {
     console.log("\n=== Testing Renewal Prevention ===");
     
     try {
-        await owner.writeContract({
+        await deployer.writeContract({
             address: controller.address,
             abi: controller.abi,
             functionName: 'renew',

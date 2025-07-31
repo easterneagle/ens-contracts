@@ -9,7 +9,7 @@ interface IETHRegistrarController {
         uint256
     ) external view returns (IPriceOracle.Price memory);
 
-    function available(string memory) external view returns (bool);
+    function available(string memory) external returns (bool);
 
     function makeCommitment(
         string memory,
@@ -33,7 +33,7 @@ interface IETHRegistrarController {
         bytes[] calldata,
         bool,
         uint16
-    ) external;
+    ) external payable;
 
     function renew(string calldata, uint256) external payable;
 }
